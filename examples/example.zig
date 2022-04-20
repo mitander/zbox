@@ -1,77 +1,67 @@
 const std = @import("std");
-const display = @import("zbox");
+const zbox = @import("zbox");
 const options = @import("build_options");
-const page_allocator = std.heap.page_allocator;
 
-pub usingnamespace @import("log_handler.zig");
+pub fn main() anyerror!void {
+    // allocator
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var ally = arena.allocator();
 
-const dvd_text: []const u8 =
-    \\ ## #   ###
-    \\ # # # # # #
-    \\ # # # # # #
-    \\ # #  #  # #
-    \\ ##   #  ##
-    \\
-    \\ ##########
-    \\#####  #####
-    \\ ##########
-;
-pub fn main() !void {
-    var alloc = page_allocator;
+    // parse args
+    var args = std.process.args();
+    _ = args.skip(); // ignore executable name
 
-    // initialize the display with stdin/out
-    try display.init(alloc);
-    defer display.deinit();
+    // get filename from arg
+    const filename = args.next() orelse {
+        std.debug.print("No file supplied.\n", .{});
+        std.debug.print("Usage: shark [filename]\n", .{});
+        std.os.exit(1);
+    };
 
-    // die on ctrl+C
-    try display.handleSignalInput();
+    // read content of file
+    var file = std.fs.cwd().openFile(filename, .{}) catch |err| return err;
+    defer file.close();
+    var file_content = try file.readToEndAlloc(ally, std.math.maxInt(usize));
+    // std.log.debug("Read file content:\n{s}", .{file_content});
 
-    // load our cool 'image'
-    var dvd_logo = try display.Buffer.init(alloc, 9, 13);
-    defer dvd_logo.deinit();
-    var logo_cursor = dvd_logo.cursorAt(0, 0);
-    try logo_cursor.writer().writeAll(dvd_text);
+    // initialize zbox
+    try zbox.init(ally);
+    defer zbox.deinit();
 
-    //setup our drawing buffer
-    var size = try display.size();
+    // kill process on ctrl-c
+    try zbox.handleSignalInput();
 
-    var output = try display.Buffer.init(alloc, size.height, size.width);
-    defer output.deinit();
+    // get window size
+    var size = try zbox.size();
 
-    // variables for tracking the movement of the logo
-    var x: isize = 0;
-    var x_vel: isize = 1;
-    var y: isize = 0;
-    var y_vel: isize = 1;
+    // init buffer
+    var editor_canvas = try zbox.Buffer.init(ally, size.height, size.width);
+    defer editor_canvas.deinit();
 
+    var cursor = editor_canvas.cursorAt(0, 0);
+    try cursor.writer().writeAll(file_content);
+
+    // init
+    var canvas = try zbox.Buffer.init(ally, size.height, size.width);
+    defer canvas.deinit();
+
+    // draw loop
     while (true) {
+        // update the size of canvas
+        size = try zbox.size();
+        try canvas.resize(size.height, size.width);
 
-        // update the size of output buffer
-        size = try display.size();
-        try output.resize(size.height, size.width);
+        // draw
+        canvas.clear();
+        canvas.blit(editor_canvas, 0, 0);
+        try zbox.push(canvas);
 
-        // draw our dvd logo
-        output.clear();
-        output.blit(dvd_logo, y, x);
-        try display.push(output);
-
-        // update logo position by velocity
-        x += x_vel;
-        y += y_vel;
-
-        // change our velocities if we are running into a wall
-        if ((x_vel < 0 and x < 0) or
-            (x_vel > 0 and @intCast(isize, dvd_logo.width) + x >= size.width))
-            x_vel *= -1;
-
-        if ((y_vel < 0 and y < 0) or
-            (y_vel > 0 and @intCast(isize, dvd_logo.height) + y >= size.height))
-            y_vel *= -1;
-
+        // sleep
         std.os.nanosleep(0, 80_000_000);
     }
 }
 
 test "static anal" {
-    std.meta.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }

@@ -1,6 +1,5 @@
 const std = @import("std");
 
-/// https://github.com/ziglang/zig/issues/5641
 pub fn todo() noreturn {
     if (std.builtin.mode == .Debug) {
         std.debug.panic("TODO: implement me", .{});
@@ -9,12 +8,7 @@ pub fn todo() noreturn {
     }
 }
 pub fn debug(comptime template: []const u8, args: anytype) void {
-    // log only if the user provides a logger
-    // as the stderr default will break terminal state
     if (!@hasDecl(@import("root"), "log")) return;
-
-    //TODO: possible implementation that uses the library
-    // to provide an in-application logging buffer.
     std.log.scoped(.zbox).debug(template, args);
 }
 
@@ -30,5 +24,5 @@ pub fn utf8ToWide(utf8: []const u8, chars: []u21) ![]u21 {
 }
 
 test "static anal" {
-    std.meta.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }

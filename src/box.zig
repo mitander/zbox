@@ -28,7 +28,7 @@ pub const ErrorSet = struct {
 usingnamespace @import("util.zig");
 
 /// must be called before any buffers are `push`ed to the terminal.
-pub fn init(allocator: *Allocator) ErrorSet.Term.Setup!void {
+pub fn init(allocator: Allocator) ErrorSet.Term.Setup!void {
     front = try Buffer.init(allocator, 24, 80);
     errdefer front.deinit();
 
@@ -58,7 +58,7 @@ pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.
     //try term.beginSync();
     while (row < buffer.height) : (row += 1) {
         var col: usize = 0;
-        var last_touched: usize = buffer.width;       // out of bounds, can't match col
+        var last_touched: usize = buffer.width; // out of bounds, can't match col
         while (col < buffer.width) : (col += 1) {
 
             // go to the next character if these are the same.
@@ -72,7 +72,7 @@ pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.
             if (last_touched != col)
                 try term.cursorTo(row, col);
 
-            last_touched = col+1;
+            last_touched = col + 1;
 
             const cell = buffer.cell(row, col);
             front.cellRef(row, col).* = cell;
@@ -104,7 +104,7 @@ pub const Buffer = struct {
     height: usize,
     width: usize,
 
-    allocator: *Allocator,
+    allocator: Allocator,
 
     pub const Writer = std.io.Writer(
         *WriteCursor,
@@ -188,7 +188,7 @@ pub const Buffer = struct {
         mem.set(Cell, self.data, .{});
     }
 
-    pub fn init(allocator: *Allocator, height: usize, width: usize) Allocator.Error!Buffer {
+    pub fn init(allocator: Allocator, height: usize, width: usize) Allocator.Error!Buffer {
         var self = Buffer{
             .data = try allocator.alloc(Cell, width * height),
             .width = width,
@@ -329,6 +329,8 @@ pub const Buffer = struct {
         options: std.fmt.FormatOptions,
         writer: anytype,
     ) @TypeOf(writer).Error!void {
+        _ = fmt;
+        _ = options;
         var row_num: usize = 0;
         try writer.print("\n\x1B[4m|", .{});
 
@@ -432,8 +434,8 @@ test "wrappedWrite" {
 }
 
 test "static anal" {
-    std.meta.refAllDecls(@This());
-    std.meta.refAllDecls(Cell);
-    std.meta.refAllDecls(Buffer);
-    std.meta.refAllDecls(Buffer.WriteCursor);
+    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(Cell);
+    std.testing.refAllDecls(Buffer);
+    std.testing.refAllDecls(Buffer.WriteCursor);
 }

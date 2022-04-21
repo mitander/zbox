@@ -5,7 +5,7 @@ const assert = std.debug.assert;
 const Allocator = mem.Allocator;
 const term = @import("prim.zig");
 
-// promote some primitive ops
+// Exporting some functions directly from prim.
 pub const size = term.size;
 pub const ignoreSignalInput = term.ignoreSignalInput;
 pub const handleSignalInput = term.handleSignalInput;
@@ -25,19 +25,19 @@ pub const ErrorSet = struct {
     };
 };
 
-usingnamespace @import("util.zig");
+/// holds last drawn state of the terminal
+var state: Buffer = undefined;
 
 /// must be called before any buffers are `push`ed to the terminal.
 pub fn init(allocator: Allocator) ErrorSet.Term.Setup!void {
-    front = try Buffer.init(allocator, 24, 80);
-    errdefer front.deinit();
-
+    state = try Buffer.init(allocator, 24, 80);
+    errdefer state.deinit();
     try term.setup(allocator);
 }
 
 /// should be called prior to program exit
 pub fn deinit() void {
-    front.deinit();
+    state.deinit();
     term.teardown();
 }
 
@@ -45,17 +45,20 @@ pub fn deinit() void {
 /// and send changes to the terminal.
 pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.Write)!void {
 
-    // resizing the front buffer naively can lead to artifacting
+    // resizing the state buffer naively can lead to artifacting
     // if we do not clear the terminal here.
-    if ((buffer.width != front.width) or (buffer.height != front.height)) {
+    if ((buffer.width != state.width) or (buffer.height != state.height)) {
         try term.clear();
-        front.clear();
+        state.clear();
     }
 
-    try front.resize(buffer.height, buffer.width);
+    try state.resize(buffer.height, buffer.width);
     var row: usize = 0;
 
-    //try term.beginSync();
+    // TODO: figure out what this was used for
+    // try term.beginSync();
+    // try term.endSync(); (defered)
+
     while (row < buffer.height) : (row += 1) {
         var col: usize = 0;
         var last_touched: usize = buffer.width; // out of bounds, can't match col
@@ -63,7 +66,7 @@ pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.
 
             // go to the next character if these are the same.
             if (Cell.eql(
-                front.cell(row, col),
+                state.cell(row, col),
                 buffer.cell(row, col),
             )) continue;
 
@@ -75,7 +78,7 @@ pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.
             last_touched = col + 1;
 
             const cell = buffer.cell(row, col);
-            front.cellRef(row, col).* = cell;
+            state.cellRef(row, col).* = cell;
 
             var codepoint: [4]u8 = undefined;
             const len = try std.unicode.utf8Encode(cell.char, &codepoint);
@@ -84,12 +87,10 @@ pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.
             try term.send(codepoint[0..len]);
         }
     }
-    //try term.endSync();
-
     try term.flush();
 }
 
-/// structure that represents a single textual character on screen
+/// Structure that represents an invididuall text character in a terminal.
 pub const Cell = struct {
     char: u21 = ' ',
     attribs: term.SGR = term.SGR{},
@@ -98,13 +99,27 @@ pub const Cell = struct {
     }
 };
 
-/// structure on which terminal drawing and printing operations are performed.
+/// Structure for handling drawing and printing operations to the terminal.
 pub const Buffer = struct {
     data: []Cell,
     height: usize,
     width: usize,
-
     allocator: Allocator,
+
+    pub fn init(allocator: Allocator, height: usize, width: usize) Allocator.Error!Buffer {
+        var self = Buffer{
+            .data = try allocator.alloc(Cell, width * height),
+            .width = width,
+            .height = height,
+            .allocator = allocator,
+        };
+        self.clear();
+        return self;
+    }
+
+    pub fn deinit(self: *Buffer) void {
+        self.allocator.free(self.data);
+    }
 
     pub const Writer = std.io.Writer(
         *WriteCursor,
@@ -112,15 +127,9 @@ pub const Buffer = struct {
         WriteCursor.writeFn,
     );
 
-    /// State tracking for an `io.Writer` into a `Buffer`. Buffers do not hold onto
-    /// any information about cursor position, so a sequential operations like writing to
-    /// it is not well defined without a helper like this.
     pub const WriteCursor = struct {
         row_num: usize,
         col_num: usize,
-        /// wrap determines how to continue writing when the the text meets
-        /// the last column in a row. In truncate mode, the text until the next newline
-        /// is dropped. In wrap mode, input is moved to the first column of the next row.
         wrap: bool = false,
 
         attribs: term.SGR = term.SGR{},
@@ -166,7 +175,6 @@ pub const Buffer = struct {
         }
     };
 
-    /// constructs a `WriteCursor` for the buffer at a given offset.
     pub fn cursorAt(self: *Buffer, row_num: usize, col_num: usize) WriteCursor {
         return .{
             .row_num = row_num,
@@ -175,9 +183,6 @@ pub const Buffer = struct {
         };
     }
 
-    /// constructs a `WriteCursor` for the buffer at a given offset. data written
-    /// through a wrapped cursor wraps around to the next line when it reaches the right
-    /// edge of the row.
     pub fn wrappedCursorAt(self: *Buffer, row_num: usize, col_num: usize) WriteCursor {
         var cursor = self.cursorAt(row_num, col_num);
         cursor.wrap = true;
@@ -188,23 +193,6 @@ pub const Buffer = struct {
         mem.set(Cell, self.data, .{});
     }
 
-    pub fn init(allocator: Allocator, height: usize, width: usize) Allocator.Error!Buffer {
-        var self = Buffer{
-            .data = try allocator.alloc(Cell, width * height),
-            .width = width,
-            .height = height,
-            .allocator = allocator,
-        };
-        self.clear();
-        return self;
-    }
-
-    pub fn deinit(self: *Buffer) void {
-        self.allocator.free(self.data);
-    }
-
-    /// return a slice representing a row at a given context. Generic over the constness
-    /// of self; if the buffer is const, the slice elements are const.
     pub fn row(self: anytype, row_num: usize) RowType: {
         switch (@typeInfo(@TypeOf(self))) {
             .Pointer => |p| {
@@ -225,8 +213,6 @@ pub const Buffer = struct {
         return self.data[row_idx .. row_idx + self.width];
     }
 
-    /// return a reference to the cell at the given row and column number. generic over
-    /// the constness of self; if self is const, the cell pointed to is also const.
     pub fn cellRef(self: anytype, row_num: usize, col_num: usize) RefType: {
         switch (@typeInfo(@TypeOf(self))) {
             .Pointer => |p| {
@@ -247,13 +233,11 @@ pub const Buffer = struct {
         return &self.row(row_num)[col_num];
     }
 
-    /// return a copy of the cell at a given offset
     pub fn cell(self: Buffer, row_num: usize, col_num: usize) Cell {
         assert(col_num < self.width);
         return self.row(row_num)[col_num];
     }
 
-    /// fill a buffer with the given cell
     pub fn fill(self: *Buffer, a_cell: Cell) void {
         mem.set(Cell, self.data, a_cell);
     }
@@ -322,7 +306,7 @@ pub const Buffer = struct {
         }
     }
 
-    // std.fmt compatibility for debugging
+    // TODO: migtht remove this
     pub fn format(
         self: Buffer,
         comptime fmt: []const u8,
@@ -348,13 +332,6 @@ pub const Buffer = struct {
         try writer.print("\x1B[0m\n", .{});
     }
 };
-
-const Size = struct {
-    height: usize,
-    width: usize,
-};
-/// represents the last drawn state of the terminal
-var front: Buffer = undefined;
 
 // tests ///////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////

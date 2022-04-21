@@ -1,8 +1,3 @@
-//! the primitive terminal module is mainly responsible for providing a simple
-//! and portable interface to pseudo terminal IO and control primitives to
-//! higher level modules. You probably shouldn't be using this directly from
-//! application code.
-
 const std = @import("std");
 const fs = std.fs;
 const os = std.os;
@@ -14,9 +9,6 @@ const assert = std.debug.assert;
 const ArrayList = std.ArrayList;
 const Allocator = mem.Allocator;
 
-usingnamespace @import("util.zig");
-
-/// Input events
 pub const Event = union(enum) {
     tick,
     escape,
@@ -48,7 +40,6 @@ pub const SGR = packed struct {
     fg_white: bool = false,
     bg_white: bool = false,
 
-    // not
     pub fn invert(self: SGR) SGR {
         var other = SGR{};
         inline for (@typeInfo(SGR).Struct.fields) |field| {
@@ -56,7 +47,7 @@ pub const SGR = packed struct {
         }
         return other;
     }
-    // and
+
     pub fn intersect(self: SGR, other: SGR) SGR {
         var new = SGR{};
         inline for (@typeInfo(SGR).Struct.fields) |field| {
@@ -65,7 +56,7 @@ pub const SGR = packed struct {
         }
         return new;
     }
-    // or
+
     pub fn unify(self: SGR, other: SGR) SGR {
         var new = SGR{};
         inline for (@typeInfo(SGR).Struct.fields) |field| {
@@ -74,6 +65,7 @@ pub const SGR = packed struct {
         }
         return new;
     }
+
     pub fn eql(self: SGR, other: SGR) bool {
         inline for (@typeInfo(SGR).Struct.fields) |field| {
             if (!(@field(self, field.name) == @field(other, field.name)))
@@ -83,23 +75,18 @@ pub const SGR = packed struct {
     }
 };
 
-pub const InTty = fs.File.Reader;
-pub const OutTty = fs.File.Writer;
+pub const TtyReader = fs.File.Reader;
+pub const TtyWriter = fs.File.Writer;
 
 pub const ErrorSet = struct {
     pub const BufWrite = ArrayList(u8).Writer.Error;
-    pub const TtyWrite = OutTty.Error;
-    pub const TtyRead = InTty.Error;
+    pub const TtyWrite = TtyWriter.Error;
+    pub const TtyRead = TtyReader.Error;
     pub const Write = ErrorSet.BufWrite || ErrorSet.TtyWrite;
     pub const Read = ErrorSet.TtyRead;
     pub const Termios = std.os.TermiosGetError || std.os.TermiosSetError;
     pub const Setup = Allocator.Error || ErrorSet.Termios || ErrorSet.TtyWrite || fs.File.OpenError;
 };
-
-/// write raw text to the terminal output buffer
-pub fn send(seq: []const u8) ErrorSet.BufWrite!void {
-    try state().buffer.out.writer().writeAll(seq);
-}
 
 pub fn sendSGR(sgr: SGR) ErrorSet.BufWrite!void {
     try send(csi ++ "0"); // always clear
@@ -125,6 +112,11 @@ pub fn sendSGR(sgr: SGR) ErrorSet.BufWrite!void {
     try send("m");
 }
 
+/// Writes raw text to the terminal output buffer
+pub fn send(seq: []const u8) ErrorSet.BufWrite!void {
+    try state().buffer.out.writer().writeAll(seq);
+}
+
 /// flush the terminal output buffer to the terminal
 pub fn flush() ErrorSet.TtyWrite!void {
     const self = state();
@@ -144,9 +136,8 @@ pub fn endSync() ErrorSet.BufWrite!void {
     try send("\x1BP=2s\x1B\\");
 }
 
-/// provides size of screen as the bottom right most position that you can move
-/// your cursor to.
 const TermSize = struct { height: usize, width: usize };
+
 pub fn size() os.UnexpectedError!TermSize {
     var winsize = mem.zeroes(os.system.winsize);
     const err = os.system.ioctl(state().tty.in.context.handle, os.system.T.IOCGWINSZ, @ptrToInt(&winsize));
@@ -155,12 +146,12 @@ pub fn size() os.UnexpectedError!TermSize {
     return os.unexpectedErrno(os.errno(err));
 }
 
-/// Hides cursor if visible
+/// Hides cursor
 pub fn cursorHide() ErrorSet.BufWrite!void {
     try sequence("?25l");
 }
 
-/// Shows cursor if hidden.
+/// Shows cursor
 pub fn cursorShow() ErrorSet.BufWrite!void {
     try sequence("?25h");
 }
@@ -291,7 +282,6 @@ pub fn nextEvent() (Allocator.Error || ErrorSet.TtyRead)!?Event {
         }
     }
     const event = parseEvent();
-    //std.log.debug("event: {}", .{event});
     return event;
 }
 
@@ -299,8 +289,8 @@ pub fn nextEvent() (Allocator.Error || ErrorSet.TtyRead)!?Event {
 
 const TermState = struct {
     tty: struct {
-        in: InTty = undefined,
-        out: OutTty = undefined,
+        in: TtyReader = undefined,
+        out: TtyWriter = undefined,
     } = .{},
     buffer: struct {
         in: ArrayList(u8) = undefined,

@@ -78,17 +78,17 @@ pub const SGR = packed struct {
 pub const TtyReader = fs.File.Reader;
 pub const TtyWriter = fs.File.Writer;
 
-pub const ErrorSet = struct {
+pub const Errors = struct {
     pub const BufWrite = ArrayList(u8).Writer.Error;
     pub const TtyWrite = TtyWriter.Error;
     pub const TtyRead = TtyReader.Error;
-    pub const Write = ErrorSet.BufWrite || ErrorSet.TtyWrite;
-    pub const Read = ErrorSet.TtyRead;
+    pub const Write = Errors.BufWrite || Errors.TtyWrite;
+    pub const Read = Errors.TtyRead;
     pub const Termios = std.os.TermiosGetError || std.os.TermiosSetError;
-    pub const Setup = Allocator.Error || ErrorSet.Termios || ErrorSet.TtyWrite || fs.File.OpenError;
+    pub const Setup = Allocator.Error || Errors.Termios || Errors.TtyWrite || fs.File.OpenError;
 };
 
-pub fn sendSGR(sgr: SGR) ErrorSet.BufWrite!void {
+pub fn sendSGR(sgr: SGR) Errors.BufWrite!void {
     try send(csi ++ "0"); // always clear
     if (sgr.bold) try send(";1");
     if (sgr.underline) try send(";4");
@@ -113,26 +113,26 @@ pub fn sendSGR(sgr: SGR) ErrorSet.BufWrite!void {
 }
 
 /// Writes raw text to the terminal output buffer
-pub fn send(seq: []const u8) ErrorSet.BufWrite!void {
+pub fn send(seq: []const u8) Errors.BufWrite!void {
     try state().buffer.out.writer().writeAll(seq);
 }
 
 /// flush the terminal output buffer to the terminal
-pub fn flush() ErrorSet.TtyWrite!void {
+pub fn flush() Errors.TtyWrite!void {
     const self = state();
     try self.tty.out.writeAll(self.buffer.out.items);
     self.buffer.out.items.len = 0;
 }
 /// clear the entire terminal
-pub fn clear() ErrorSet.BufWrite!void {
+pub fn clear() Errors.BufWrite!void {
     try sequence("2J");
 }
 
-pub fn beginSync() ErrorSet.BufWrite!void {
+pub fn beginSync() Errors.BufWrite!void {
     try send("\x1BP=1s\x1B\\");
 }
 
-pub fn endSync() ErrorSet.BufWrite!void {
+pub fn endSync() Errors.BufWrite!void {
     try send("\x1BP=2s\x1B\\");
 }
 
@@ -147,23 +147,22 @@ pub fn size() os.UnexpectedError!TermSize {
 }
 
 /// Hides cursor
-pub fn cursorHide() ErrorSet.BufWrite!void {
+pub fn cursorHide() Errors.BufWrite!void {
     try sequence("?25l");
 }
 
 /// Shows cursor
-pub fn cursorShow() ErrorSet.BufWrite!void {
+pub fn cursorShow() Errors.BufWrite!void {
     try sequence("?25h");
 }
 
-/// warp the cursor to the specified `row` and `col` in the current scrolling
-/// region.
-pub fn cursorTo(row: usize, col: usize) ErrorSet.BufWrite!void {
+/// warp the cursor to the specified `row` and `col` in the current scrolling region.
+pub fn cursorTo(row: usize, col: usize) Errors.BufWrite!void {
     try formatSequence("{};{}H", .{ row + 1, col + 1 });
 }
 
 /// set up terminal for graphical operation
-pub fn setup(alloc: Allocator) ErrorSet.Setup!void {
+pub fn init(alloc: Allocator) Errors.Setup!void {
     errdefer termState = null;
     termState = .{};
     const self = state();
@@ -216,7 +215,7 @@ pub fn setup(alloc: Allocator) ErrorSet.Setup!void {
 }
 
 // set terminal input maximum wait time in 1/10 seconds unit, zero is no wait
-pub fn setTimeout(tenths: u8) ErrorSet.Termios!void {
+pub fn setTimeout(tenths: u8) Errors.Termios!void {
     const handle = state().tty.in.context.handle;
 
     var termios = try os.tcgetattr(handle);
@@ -226,7 +225,7 @@ pub fn setTimeout(tenths: u8) ErrorSet.Termios!void {
 
 /// generate a terminal/job control signals with certain hotkeys
 /// Ctrl-C, Ctrl-Z, Ctrl-S, etc
-pub fn handleSignalInput() ErrorSet.Termios!void {
+pub fn handleSignalInput() Errors.Termios!void {
     const handle = state().tty.in.context.handle;
 
     var termios = try os.tcgetattr(handle);
@@ -237,7 +236,7 @@ pub fn handleSignalInput() ErrorSet.Termios!void {
 
 /// treat terminal/job control hotkeys as normal input
 /// Ctrl-C, Ctrl-Z, Ctrl-S, etc
-pub fn ignoreSignalInput() ErrorSet.Termios!void {
+pub fn ignoreSignalInput() Errors.Termios!void {
     const handle = state().tty.in.context.handle;
     var termios = try os.tcgetattr(handle);
 
@@ -246,8 +245,9 @@ pub fn ignoreSignalInput() ErrorSet.Termios!void {
     try os.tcsetattr(handle, .FLUSH, termios);
 }
 
-/// restore as much of the terminals's original state as possible
-pub fn teardown() void {
+/// Deinitalize the terminal io and restore as much of the terminals's
+/// original state as possible.
+pub fn deinit() void {
     const self = state();
 
     exitAltScreen() catch {};
@@ -264,7 +264,7 @@ pub fn teardown() void {
 
 /// read next message from the tty and parse it. takes
 /// special action for certain events
-pub fn nextEvent() (Allocator.Error || ErrorSet.TtyRead)!?Event {
+pub fn nextEvent() (Allocator.Error || Errors.TtyRead)!?Event {
     const max_bytes = 4096;
     var total_bytes: usize = 0;
 
@@ -330,33 +330,33 @@ fn parseEvent() ?Event {
 
 /// sending text to the terminal at a specific offset overwrites preexisting text
 /// in this mode.
-fn overwriteMode() ErrorSet.BufWrite!void {
+fn overwriteMode() Errors.BufWrite!void {
     try sequence("4l");
 }
 
 /// sending text to the terminat at a specific offset pushes preexisting text to
 /// the right of the the line in this mode
-fn insertMode() ErrorSet.BufWrite!void {
+fn insertMode() Errors.BufWrite!void {
     try sequence("4h");
 }
 
 /// when the cursor, or text being moved by insertion reaches the last column on
 /// the terminal in this mode, it moves to the next like
-fn wrapMode() ErrorSet.BufWrite!void {
+fn wrapMode() Errors.BufWrite!void {
     try sequence("?7h");
 }
 /// when the cursor reaches the last column on the terminal in this mode, it
 /// stops, and further writing changes the contents of the final column in place.
 /// when text being pushed by insertion reaches the final column, it is pushed
 /// out of the terminal buffer and lost.
-fn truncMode() ErrorSet.BufWrite!void {
+fn truncMode() Errors.BufWrite!void {
     try sequence("?7l");
 }
 
 /// not entirely sure what this does, but it is something about changing the
 /// sequences generated by certain types of input, and is usually called when
 /// initializing the terminal for 'non-cannonical' input.
-fn keypadMode() ErrorSet.BufWrite!void {
+fn keypadMode() Errors.BufWrite!void {
     try sequence("?1h");
     try send("\x1B=");
 }
@@ -365,7 +365,7 @@ fn keypadMode() ErrorSet.BufWrite!void {
 // sequence
 // this allows you to restore the contents of the display by calling
 // exitAltScreeen() later when the program is exiting.
-fn enterAltScreen() ErrorSet.BufWrite!void {
+fn enterAltScreen() Errors.BufWrite!void {
     try sequence("s");
     try sequence("?47h");
     try sequence("?1049h");
@@ -373,7 +373,7 @@ fn enterAltScreen() ErrorSet.BufWrite!void {
 
 // restores the cursor and then sends a couple version sof the exit_altscreen
 // sequence.
-fn exitAltScreen() ErrorSet.BufWrite!void {
+fn exitAltScreen() Errors.BufWrite!void {
     try sequence("u");
     try sequence("?47l");
     try sequence("?1049l");
@@ -382,15 +382,15 @@ fn exitAltScreen() ErrorSet.BufWrite!void {
 // escape sequence construction and printing ///////////////////////////////////
 const csi = "\x1B[";
 
-fn sequence(comptime seq: []const u8) ErrorSet.BufWrite!void {
+fn sequence(comptime seq: []const u8) Errors.BufWrite!void {
     try send(csi ++ seq);
 }
 
-fn format(comptime template: []const u8, args: anytype) ErrorSet.BufWrite!void {
+fn format(comptime template: []const u8, args: anytype) Errors.BufWrite!void {
     const self = state();
     try self.buffer.out.writer().print(template, args);
 }
-fn formatSequence(comptime template: []const u8, args: anytype) ErrorSet.BufWrite!void {
+fn formatSequence(comptime template: []const u8, args: anytype) Errors.BufWrite!void {
     try format(csi ++ template, args);
 }
 

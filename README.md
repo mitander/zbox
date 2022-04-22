@@ -17,8 +17,6 @@ Yes, this is a fork. Shout-out to jessrud/zbox!
 ### Usage
 see [examples](examples) for sample usage
 
-![invaderdemo](examples/invader-zig.gif)
-
 ### Features
 * exposes some primitives for terminal setup/control
 * exposes an interface to terminal printing/drawing that de-duplicates and

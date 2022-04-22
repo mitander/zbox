@@ -2,78 +2,72 @@ const std = @import("std");
 const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
-const Allocator = mem.Allocator;
-const term = @import("prim.zig");
+const Allocator = std.mem.Allocator;
 
-// Exporting some functions directly from prim.
-pub const size = term.size;
-pub const ignoreSignalInput = term.ignoreSignalInput;
-pub const handleSignalInput = term.handleSignalInput;
-pub const cursorShow = term.cursorShow;
-pub const cursorHide = term.cursorHide;
-pub const nextEvent = term.nextEvent;
-pub const setTimeout = term.setTimeout;
-pub const clear = term.clear;
-pub const Event = term.Event;
+const termio = @import("prim.zig");
 
-pub const ErrorSet = struct {
-    pub const Term = term.ErrorSet;
-    pub const Write = Term.Write || std.os.WriteError;
+pub const size = termio.size;
+pub const ignoreSignalInput = termio.ignoreSignalInput;
+pub const handleSignalInput = termio.handleSignalInput;
+pub const cursorShow = termio.cursorShow;
+pub const cursorHide = termio.cursorHide;
+pub const nextEvent = termio.nextEvent;
+pub const setTimeout = termio.setTimeout;
+pub const clear = termio.clear;
+pub const Event = termio.Event;
+
+pub const Errors = struct {
+    pub const Term = termio.Errors;
+    pub const Write = termio.Errors.Write || std.os.WriteError;
     pub const Utf8Encode = error{
         Utf8CannotEncodeSurrogateHalf,
         CodepointTooLarge,
     };
 };
 
-/// holds last drawn state of the terminal
 var state: Buffer = undefined;
 
-/// must be called before any buffers are `push`ed to the terminal.
-pub fn init(allocator: Allocator) ErrorSet.Term.Setup!void {
+pub fn init(allocator: Allocator) Errors.Term.Setup!void {
     state = try Buffer.init(allocator, 24, 80);
     errdefer state.deinit();
-    try term.setup(allocator);
+
+    try termio.init(allocator);
+    errdefer termio.deinit();
 }
 
-/// should be called prior to program exit
 pub fn deinit() void {
     state.deinit();
-    term.teardown();
+    termio.deinit();
 }
 
-/// compare state of input buffer to a buffer tracking display state
+/// Compare state of input buffer to a buffer tracking display state
 /// and send changes to the terminal.
-pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.Write)!void {
-
-    // resizing the state buffer naively can lead to artifacting
-    // if we do not clear the terminal here.
+pub fn push(buffer: Buffer) (Allocator.Error || Errors.Utf8Encode || Errors.Write)!void {
+    // clear terminal while resizing window to prevent artifacts.
     if ((buffer.width != state.width) or (buffer.height != state.height)) {
-        try term.clear();
+        try termio.clear();
         state.clear();
     }
 
+    // resize
     try state.resize(buffer.height, buffer.width);
-    var row: usize = 0;
 
     // TODO: figure out what this was used for
     // try term.beginSync();
-    // try term.endSync(); (defered)
+    // defer try term.endSync();
 
+    var row: usize = 0;
     while (row < buffer.height) : (row += 1) {
         var col: usize = 0;
         var last_touched: usize = buffer.width; // out of bounds, can't match col
         while (col < buffer.width) : (col += 1) {
 
-            // go to the next character if these are the same.
-            if (Cell.eql(
-                state.cell(row, col),
-                buffer.cell(row, col),
-            )) continue;
+            // skip if cells are equal
+            if (Cell.eql(state.cell(row, col), buffer.cell(row, col))) continue;
 
             // only send cursor movement sequence if the last modified
             // cell was not the immediately previous cell in this row
-            if (last_touched != col)
-                try term.cursorTo(row, col);
+            if (last_touched != col) try termio.cursorTo(row, col);
 
             last_touched = col + 1;
 
@@ -83,17 +77,18 @@ pub fn push(buffer: Buffer) (Allocator.Error || ErrorSet.Utf8Encode || ErrorSet.
             var codepoint: [4]u8 = undefined;
             const len = try std.unicode.utf8Encode(cell.char, &codepoint);
 
-            try term.sendSGR(cell.attribs);
-            try term.send(codepoint[0..len]);
+            try termio.sendSGR(cell.attribs);
+            try termio.send(codepoint[0..len]);
         }
     }
-    try term.flush();
+    try termio.flush();
 }
 
-/// Structure that represents an invididuall text character in a terminal.
+/// Structure that represents an invididual text character in a terminal.
 pub const Cell = struct {
     char: u21 = ' ',
-    attribs: term.SGR = term.SGR{},
+    attribs: termio.SGR = termio.SGR{},
+
     fn eql(self: Cell, other: Cell) bool {
         return self.char == other.char and self.attribs.eql(other.attribs);
     }
@@ -132,7 +127,7 @@ pub const Buffer = struct {
         col_num: usize,
         wrap: bool = false,
 
-        attribs: term.SGR = term.SGR{},
+        attribs: termio.SGR = termio.SGR{},
         buffer: *Buffer,
 
         const Error = error{ InvalidUtf8, InvalidCharacter };
@@ -176,7 +171,7 @@ pub const Buffer = struct {
     };
 
     pub fn cursorAt(self: *Buffer, row_num: usize, col_num: usize) WriteCursor {
-        return .{
+        return WriteCursor{
             .row_num = row_num,
             .col_num = col_num,
             .buffer = self,
@@ -246,14 +241,10 @@ pub const Buffer = struct {
     /// data is lost in shrunk dimensions, and new space is initialized
     /// as the default cell in grown dimensions.
     pub fn resize(self: *Buffer, height: usize, width: usize) Allocator.Error!void {
+        // if dimensions are the same as previous draw we skip it.
         if (self.height == height and self.width == width) return;
-        //TODO: figure out more ways to minimize unnecessary reallocation and
-        //redrawing here. for instance:
-        // `if self.width < width and self.height < self.height` no redraw or
-        // realloc required
-        // more difficult:
-        // `if self.width * self.height >= width * height` requires redraw
-        // but could possibly use some sort of scratch buffer thing.
+
+        // update current buffer and make copy of old one.
         const old = self.*;
         self.* = .{
             .allocator = old.allocator,
@@ -262,16 +253,20 @@ pub const Buffer = struct {
             .data = try old.allocator.alloc(Cell, width * height),
         };
 
-        if (width > old.width or
-            height > old.height) self.clear();
+        // if any dimension got bigger we need to clear the screen.
+        if (width > old.width or height > old.height) self.clear();
 
+        // get minimum dimensions.
         const min_height = math.min(old.height, height);
         const min_width = math.min(old.width, width);
 
+        // copy the rows matching with the updated dimensions.
         var n: usize = 0;
         while (n < min_height) : (n += 1) {
             mem.copy(Cell, self.row(n), old.row(n)[0..min_width]);
         }
+
+        // de-allocate copy
         self.allocator.free(old.data);
     }
 
@@ -283,14 +278,14 @@ pub const Buffer = struct {
         var self_row_idx = row_num;
         var other_row_idx: usize = 0;
 
+        var self_col_idx = col_num;
+        var other_col_idx: usize = 0;
+
         while (self_row_idx < self.height and other_row_idx < other.height) : ({
             self_row_idx += 1;
             other_row_idx += 1;
         }) {
             if (self_row_idx < 0) continue;
-
-            var self_col_idx = col_num;
-            var other_col_idx: usize = 0;
 
             while (self_col_idx < self.width and other_col_idx < other.width) : ({
                 self_col_idx += 1;

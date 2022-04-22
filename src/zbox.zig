@@ -278,14 +278,13 @@ pub const Buffer = struct {
         var self_row_idx = row_num;
         var other_row_idx: usize = 0;
 
-        var self_col_idx = col_num;
-        var other_col_idx: usize = 0;
-
         while (self_row_idx < self.height and other_row_idx < other.height) : ({
             self_row_idx += 1;
             other_row_idx += 1;
         }) {
             if (self_row_idx < 0) continue;
+            var self_col_idx = col_num;
+            var other_col_idx: usize = 0;
 
             while (self_col_idx < self.width and other_col_idx < other.width) : ({
                 self_col_idx += 1;
